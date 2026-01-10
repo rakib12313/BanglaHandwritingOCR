@@ -215,6 +215,7 @@ export const OCRWorkspace: React.FC<OCRWorkspaceProps> = ({ onBack }) => {
     } catch (err: any) {
       console.error("OCR Processing Error:", err);
       let msg = err.message || "Unknown error";
+<<<<<<< HEAD
       const lowerMsg = msg.toLowerCase();
       
       // Handle Leaked Key (403)
@@ -231,6 +232,15 @@ export const OCRWorkspace: React.FC<OCRWorkspaceProps> = ({ onBack }) => {
       } 
       // Handle generic process/env errors
       else if (lowerMsg.includes("process") || lowerMsg.includes("api_key")) {
+=======
+      
+      // Handle the specific Google API error for invalid keys
+      if (msg.includes("API key not valid") || msg.includes("API_KEY_INVALID")) {
+         msg = "Invalid API Key. Please verify the key in your .env file or Vercel Settings.";
+      } else if (msg.includes("API Key not found")) {
+         // Keep the custom error message we threw above
+      } else if (msg.includes("process") || msg.includes("API_KEY")) {
+>>>>>>> 3e8b9ee32bb9b2717eafd15d611fe894b1d985ae
          msg += " (Check Environment Variables)";
       }
       
@@ -326,8 +336,12 @@ export const OCRWorkspace: React.FC<OCRWorkspaceProps> = ({ onBack }) => {
                         <span className="font-medium text-xs sm:text-sm break-all">{error}</span>
                       </div>
                       
+<<<<<<< HEAD
                       {/* Check for generic "API Key" or "Leaked" message to show helper buttons */}
                       {(error.includes("API Key") || error.includes("Leaked")) && (
+=======
+                      {error.includes("API Key") && (
+>>>>>>> 3e8b9ee32bb9b2717eafd15d611fe894b1d985ae
                          <div className="flex gap-2 mt-2 sm:mt-0 sm:ml-auto w-full sm:w-auto">
                             <a 
                               href="https://aistudio.google.com/app/apikey" 
@@ -335,7 +349,11 @@ export const OCRWorkspace: React.FC<OCRWorkspaceProps> = ({ onBack }) => {
                               rel="noopener noreferrer"
                               className="flex-1 sm:flex-none justify-center flex items-center gap-1 px-3 py-1.5 bg-white dark:bg-red-950 border border-red-200 dark:border-red-800 rounded text-xs font-semibold hover:bg-red-50 dark:hover:bg-red-900 transition-colors whitespace-nowrap"
                             >
+<<<<<<< HEAD
                               Get New Key <ExternalLink size={10} />
+=======
+                              Get API Key <ExternalLink size={10} />
+>>>>>>> 3e8b9ee32bb9b2717eafd15d611fe894b1d985ae
                             </a>
                             <a 
                               href="https://vercel.com/docs/projects/environment-variables" 
