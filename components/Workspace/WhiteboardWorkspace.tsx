@@ -4,13 +4,14 @@ import {
   MousePointer2, PenTool, Eraser, Minus, ArrowUpRight, Square, Circle, Grid3X3, 
   Trash2, Download, Copy, X, Type, Activity, Battery, Anchor, Zap, Triangle,
   Sparkles, Calculator, Bot, XCircle, Check, Wand2, Undo2, Redo2, Image as ImageIcon,
-  Save, FolderOpen, Mouse
+  Save, FolderOpen, Mouse, Shapes, Hexagon, AlertTriangle, Loader2
 } from 'lucide-react';
 import { Button } from '../UI/Button';
 
 // Drawing Types
 type ToolType = 
-  'SELECT' | 'PEN' | 'ERASER' | 'LINE' | 'ARROW' | 'RECT' | 'CIRCLE' | 'TABLE' | 'TEXT' | 'IMAGE' |
+  'SELECT' | 'PEN' | 'ERASER' | 'LINE' | 'ARROW' | 'RECT' | 'CIRCLE' | 'ELLIPSE' | 
+  'TABLE' | 'TEXT' | 'IMAGE' | 'DIAMOND' | 'TRIANGLE' | 'POLYGON' |
   'AND' | 'OR' | 'NOT' | 
   'RESISTOR' | 'CAPACITOR' | 'INDUCTOR' | 'SOURCE' | 'DIODE';
 
@@ -32,6 +33,7 @@ interface SavedBoard {
     name: string;
     date: string;
     data: DrawAction[];
+    previewUrl?: string;
 }
 
 interface WhiteboardProps {
@@ -54,8 +56,18 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
   });
   const [showSavedList, setShowSavedList] = useState(false);
 
+  // UI States
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [toast, setToast] = useState<{msg: string, type: 'success' | 'error'} | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Persist to Local Storage with Error Handling
   useEffect(() => {
-    localStorage.setItem('sebon_whiteboard_saves', JSON.stringify(savedBoards));
+    try {
+        localStorage.setItem('sebon_whiteboard_saves', JSON.stringify(savedBoards));
+    } catch (e) {
+        console.error("Failed to sync to localStorage", e);
+    }
   }, [savedBoards]);
 
   // Computed drawings from history
@@ -83,7 +95,7 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiResult, setAiResult] = useState<string | null>(null);
   const [aiImage, setAiImage] = useState<string | null>(null);
-  const [aiMode, setAiMode] = useState<'EXPLAIN' | 'MATH' | 'REALIZE' | null>(null);
+  const [aiMode, setAiMode] = useState<'EXPLAIN' | 'MATH' | 'REALIZE' | 'BEAUTIFY' | null>(null);
 
   // Table Config
   const [tableRows, setTableRows] = useState(3);
@@ -91,6 +103,12 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // --- Helper: Toast ---
+  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
+      setToast({ msg, type });
+      setTimeout(() => setToast(null), 3000);
+  };
 
   // --- History Helpers ---
   const addToHistory = (newDrawings: DrawAction[]) => {
@@ -114,23 +132,93 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
       }
   };
 
-  const saveBoard = () => {
-      const name = prompt("Name this drawing:", `Board ${savedBoards.length + 1}`);
-      if (!name) return;
-      const newBoard: SavedBoard = {
-          id: Date.now().toString(),
-          name,
-          date: new Date().toLocaleDateString(),
-          data: drawings
-      };
-      setSavedBoards([newBoard, ...savedBoards]);
+  const saveBoard = async () => {
+      // 1. Get Name
+      const name = window.prompt("Name this drawing:", `Board ${savedBoards.length + 1}`);
+      if (!name) return; // User cancelled
+
+      setIsSaving(true);
+      showToast("Saving...", "success");
+
+      try {
+          let previewUrl: string | undefined;
+          let blob: Blob | null = null;
+
+          // 2. Generate Blob for Preview (with timeout safety)
+          if (canvasRef.current) {
+               try {
+                   blob = await new Promise<Blob | null>((resolve) => {
+                       // Prevent infinite hang if toBlob fails
+                       const timeout = setTimeout(() => resolve(null), 3000);
+                       canvasRef.current?.toBlob((b) => {
+                           clearTimeout(timeout);
+                           resolve(b);
+                       }, 'image/png');
+                   });
+               } catch (err) {
+                   console.error("Blob generation error:", err);
+               }
+               
+               if (blob) {
+                   // 3. Upload to Cloudinary
+                   const formData = new FormData();
+                   formData.append('file', blob);
+                   formData.append('upload_preset', 'OCR handwriting bangla'); 
+                   formData.append('cloud_name', 'da2sbo8ov');
+
+                   try {
+                      const res = await fetch('https://api.cloudinary.com/v1_1/da2sbo8ov/auto/upload', { 
+                          method: 'POST', 
+                          body: formData 
+                      });
+                      if (res.ok) {
+                          const data = await res.json();
+                          previewUrl = data.secure_url;
+                      } else {
+                          console.warn("Cloudinary upload failed:", await res.text());
+                      }
+                   } catch (uploadErr) {
+                       console.error("Cloud upload error:", uploadErr);
+                   }
+               }
+          }
+
+          const newBoard: SavedBoard = {
+              id: Date.now().toString(),
+              name,
+              date: new Date().toLocaleDateString(),
+              data: drawings,
+              previewUrl
+          };
+          
+          const updatedBoards = [newBoard, ...savedBoards];
+
+          // 4. Try saving to localStorage explicitly first to catch errors
+          try {
+              localStorage.setItem('sebon_whiteboard_saves', JSON.stringify(updatedBoards));
+              // Only update state if storage succeeded
+              setSavedBoards(updatedBoards);
+              setShowSavedList(true); // Open drawer to confirm
+              showToast("Board saved successfully!");
+          } catch (e) {
+              console.error("Storage Quota Exceeded:", e);
+              showToast("Storage full! Delete old boards to save.", "error");
+          }
+
+      } catch (e) {
+          console.error("Save Board Error:", e);
+          showToast("Failed to save board.", "error");
+      } finally {
+          setIsSaving(false);
+      }
   };
 
   const loadBoard = (board: SavedBoard) => {
-      if (confirm("Load saved board? Unsaved changes on current board will be lost.")) {
+      if (confirm(`Load "${board.name}"? Unsaved changes will be lost.`)) {
           setHistory([board.data]);
           setHistoryStep(0);
           setShowSavedList(false);
+          showToast(`Loaded "${board.name}"`);
       }
   };
 
@@ -138,6 +226,7 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
       e.stopPropagation();
       if (confirm("Delete this saved board?")) {
           setSavedBoards(prev => prev.filter(b => b.id !== id));
+          showToast("Board deleted.");
       }
   };
 
@@ -266,7 +355,46 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
          const radius = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
          ctx.arc(start.x, start.y, radius, 0, 2 * Math.PI);
          ctx.stroke();
+       }
+       else if (action.type === 'ELLIPSE') {
+           const w = Math.abs(end.x - start.x);
+           const h = Math.abs(end.y - start.y);
+           const cx = start.x + (end.x - start.x)/2;
+           const cy = start.y + (end.y - start.y)/2;
+           ctx.beginPath();
+           ctx.ellipse(cx, cy, w/2, h/2, 0, 0, 2 * Math.PI);
+           ctx.stroke();
+       }
+       else if (action.type === 'TRIANGLE') {
+          ctx.beginPath();
+          ctx.moveTo(start.x, end.y); // Bottom left
+          ctx.lineTo(end.x, end.y);   // Bottom right
+          ctx.lineTo(start.x + (end.x - start.x) / 2, start.y); // Top center
+          ctx.closePath();
+          ctx.stroke();
        } 
+       else if (action.type === 'DIAMOND') {
+          const cx = start.x + (end.x - start.x)/2;
+          const cy = start.y + (end.y - start.y)/2;
+          ctx.beginPath();
+          ctx.moveTo(cx, start.y); // Top
+          ctx.lineTo(end.x, cy);   // Right
+          ctx.lineTo(cx, end.y);   // Bottom
+          ctx.lineTo(start.x, cy); // Left
+          ctx.closePath();
+          ctx.stroke();
+       }
+       else if (action.type === 'POLYGON') {
+           if (action.points.length > 1) {
+               ctx.beginPath();
+               ctx.moveTo(start.x, start.y);
+               for(let i=1; i<action.points.length; i++) {
+                   ctx.lineTo(action.points[i].x, action.points[i].y);
+               }
+               ctx.closePath();
+               ctx.stroke();
+           }
+       }
        else if (action.type === 'TABLE') {
          const w = end.x - start.x;
          const h = end.y - start.y;
@@ -544,29 +672,41 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
   const handleMouseDown = (e: React.MouseEvent) => {
     const point = getCanvasPoint(e);
 
-    // RIGHT CLICK: Select / Move
+    // RIGHT CLICK: Select / Move (Hold to Drag)
     if (e.button === 2) {
         if (isTyping) {
             finalizeText();
             return;
         }
 
+        // Try to select and pick up
         const clickedIndex = [...drawings].reverse().findIndex(d => isPointInDrawing(point, d));
         if (clickedIndex !== -1) {
             const actualIndex = drawings.length - 1 - clickedIndex;
             setSelectedId(drawings[actualIndex].id);
             setIsDragging(true);
             setDragStart(point);
-            // Snapshot for Undo of this move
+            // Snapshot for Undo of this move. 
+            // We save the state *before* the move begins.
             addToHistory([...drawings]);
         } else {
+            // Clicked on empty space -> Deselect
             setSelectedId(null);
+            setIsDragging(false);
         }
         return;
-    }
+    };
 
     // LEFT CLICK: Draw
     if (e.button === 0) {
+        // If we happen to be in a weird state where dragging didn't stop, stop it.
+        if (isDragging) {
+             setIsDragging(false);
+             setDragStart(null);
+             setSelectedId(null);
+             return;
+        }
+
         if (tool === 'SELECT') return; // Safe Mode
 
         if (tool === 'TEXT') {
@@ -624,29 +764,31 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
   };
 
   const handleMouseUp = () => {
-    // If we were dragging, we are done. 
-    // The history step was already updated in place during Move.
+    // Stop Dragging (Right Click Release)
     if (isDragging) {
-      setIsDragging(false);
-      setDragStart(null);
-      return;
+        setIsDragging(false);
+        setDragStart(null);
+        setSelectedId(null); // Deselect on drop so it reverts to original color
     }
     
-    // If we were drawing, save to history
+    // Stop Drawing (Left Click Release)
     if (currentDrawing) {
       addToHistory([...drawings, currentDrawing]);
       setCurrentDrawing(null);
     }
   };
 
-  const handleClear = () => {
-    if(confirm("Clear the entire whiteboard?")) addToHistory([]);
+  const confirmClear = () => {
+    addToHistory([]);
+    setShowClearConfirm(false);
+    showToast("Whiteboard cleared.");
   };
 
   const handleDeleteSelected = () => {
       if(selectedId) {
           addToHistory(drawings.filter(d => d.id !== selectedId));
           setSelectedId(null);
+          showToast("Item deleted.");
       }
   };
 
@@ -656,6 +798,9 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
       link.download = `whiteboard-${Date.now()}.png`;
       link.href = canvasRef.current.toDataURL();
       link.click();
+      showToast("Image exported!");
+    } else {
+      showToast("Nothing to export.", "error");
     }
   };
 
@@ -663,15 +808,15 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
     if (!canvasRef.current) return;
     try {
       canvasRef.current.toBlob(async (blob) => {
-        if (!blob) return;
+        if (!blob) throw new Error("Canvas empty");
         await navigator.clipboard.write([
           new ClipboardItem({ 'image/png': blob })
         ]);
-        alert('Whiteboard copied to clipboard!');
+        showToast("Copied to clipboard!");
       });
     } catch (err) {
       console.error('Copy failed', err);
-      alert('Failed to copy to clipboard.');
+      showToast("Failed to copy. Try Export instead.", "error");
     }
   };
 
@@ -690,6 +835,116 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
     return potentialKeys.find(key => key && key.trim().length > 0);
   };
 
+  const runSmartBeautify = async () => {
+    if (!canvasRef.current) return;
+    
+    setAiMode('BEAUTIFY');
+    setIsAnalyzing(true);
+    setAiResult(null);
+    setAiImage(null);
+
+    try {
+        const apiKey = getApiKey();
+        if (!apiKey) throw new Error("API Key missing");
+
+        const ai = new GoogleGenAI({ apiKey });
+        const canvasData = canvasRef.current.toDataURL('image/png');
+        const base64Data = canvasData.split(',')[1];
+
+        const prompt = `
+          Analyze this sketch and break it down into a list of digital elements.
+          1. Detect Shapes: RECT, CIRCLE, ELLIPSE, TRIANGLE, DIAMOND, POLYGON (for irregular shapes like hexagons).
+          2. Detect Connectors: LINE (simple lines), ARROW (lines with arrowheads).
+          3. Detect Text: Identify handwritten text inside or near shapes.
+          4. Detect Colors: Approximate the hex color of the ink used.
+
+          Return a JSON object with a "elements" array.
+          Schema:
+          {
+            "type": "RECT" | "CIRCLE" | "ELLIPSE" | "TRIANGLE" | "DIAMOND" | "LINE" | "ARROW" | "TEXT" | "POLYGON",
+            "x": int, "y": int, "w": int, "h": int, // Bounding box (used for RECT, CIRCLE, ELLIPSE, DIAMOND, TEXT)
+            "x1": int, "y1": int, "x2": int, "y2": int, // Coordinates (used for LINE, ARROW)
+            "points": [{"x": int, "y": int}], // Used for POLYGON or TRIANGLE
+            "text": string, // Content for TEXT type
+            "color": string // Hex color code
+          }
+
+          - For shapes with text inside, return TWO elements: the shape (e.g., RECT) and the TEXT element on top of it.
+          - Coordinates must match the pixel positions in the image (approx 0-1000 scale).
+          - Do NOT return "UNKNOWN" types.
+          - Output ONLY valid JSON.
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { parts: [{ inlineData: { mimeType: 'image/png', data: base64Data } }, { text: prompt }] },
+            config: {
+                responseMimeType: 'application/json'
+            }
+        });
+
+        if (response.text) {
+             const data = JSON.parse(response.text);
+             if (data.elements && Array.isArray(data.elements)) {
+                 const newShapes: DrawAction[] = data.elements.map((s: any) => {
+                     const id = Date.now() + Math.random().toString();
+                     const common = { id, color: s.color || strokeColor, width: 2 }; // Default width
+                     
+                     if (s.type === 'RECT') {
+                         return { ...common, type: 'RECT', points: [{ x: s.x, y: s.y }, { x: s.x + s.w, y: s.y + s.h }] };
+                     } else if (s.type === 'CIRCLE') {
+                         // Map bounding box to circle center/radius logic
+                         const r = Math.min(s.w, s.h) / 2;
+                         const cx = s.x + s.w/2;
+                         const cy = s.y + s.h/2;
+                         // Renderer expects start(center-r) and end(center+r) logic approx
+                         return { ...common, type: 'CIRCLE', points: [{ x: cx - r, y: cy }, { x: cx + r, y: cy }] };
+                     } else if (s.type === 'ELLIPSE') {
+                         return { ...common, type: 'ELLIPSE', points: [{ x: s.x, y: s.y }, { x: s.x + s.w, y: s.y + s.h }] };
+                     } else if (s.type === 'DIAMOND') {
+                         return { ...common, type: 'DIAMOND', points: [{ x: s.x, y: s.y }, { x: s.x + s.w, y: s.y + s.h }] };
+                     } else if (s.type === 'LINE') {
+                         return { ...common, type: 'LINE', points: [{ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 }] };
+                     } else if (s.type === 'ARROW') {
+                         return { ...common, type: 'ARROW', points: [{ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 }] };
+                     } else if (s.type === 'TEXT') {
+                         return { 
+                             ...common, 
+                             type: 'TEXT', 
+                             points: [{ x: s.x, y: s.y }], 
+                             text: s.text,
+                             width: 2 // affects font size calculation
+                         };
+                     } else if (s.type === 'TRIANGLE' || s.type === 'POLYGON') {
+                         if (s.points && s.points.length > 0) {
+                             return { ...common, type: 'POLYGON', points: s.points };
+                         }
+                         // Fallback for triangle if points missing but box present
+                         if (s.type === 'TRIANGLE' && s.w) {
+                             return { ...common, type: 'TRIANGLE', points: [{ x: s.x, y: s.y + s.h }, { x: s.x + s.w, y: s.y + s.h }] }; 
+                         }
+                     }
+                     return null;
+                 }).filter(Boolean);
+
+                 if (newShapes.length > 0) {
+                     // NEW LOGIC: Replace the entire board with new shapes instead of appending
+                     addToHistory(newShapes);
+                     setAiResult(`Replaced rough sketch with ${newShapes.length} clean elements!`);
+                 } else {
+                     setAiResult("No recognizable shapes found.");
+                 }
+             }
+        }
+
+    } catch (e: any) {
+        console.error(e);
+        setAiResult("Error: " + (e.message || "Failed."));
+    } finally {
+        setIsAnalyzing(false);
+    }
+  };
+
   const runAIAnalysis = async (mode: 'EXPLAIN' | 'MATH' | 'REALIZE') => {
     if (!canvasRef.current) return;
     
@@ -706,56 +961,53 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
         const canvasData = canvasRef.current.toDataURL('image/png');
         const base64Data = canvasData.split(',')[1];
 
+        let prompt = "";
+        let model = "gemini-3-flash-preview";
+
+        if (mode === 'EXPLAIN') {
+            prompt = "Analyze this whiteboard sketch. Explain what it represents, any diagrams, text, or logic flows present. Be concise.";
+            model = "gemini-3-flash-preview";
+        } else if (mode === 'MATH') {
+            prompt = "Solve the mathematical problem or equation shown in this image. Show step-by-step working and the final answer.";
+            model = "gemini-3-pro-preview";
+        } else if (mode === 'REALIZE') {
+            prompt = "Transform this sketch into a high-quality, realistic image. Keep the composition similar.";
+            model = "gemini-2.5-flash-image";
+        }
+
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: 'image/png', data: base64Data } },
+                    { text: prompt }
+                ]
+            }
+        });
+
         if (mode === 'REALIZE') {
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-image',
-                contents: {
-                    parts: [
-                        { inlineData: { mimeType: 'image/png', data: base64Data } },
-                        { text: "Transform this sketch into a realistic, high-quality image. If it is a technical diagram (like a circuit), render it with real-world components. Also, provide a brief text explanation of how the system in the image works." }
-                    ]
+             let foundImage = false;
+             if (response.candidates?.[0]?.content?.parts) {
+                for (const part of response.candidates[0].content.parts) {
+                    if (part.inlineData) {
+                         const base64EncodeString = part.inlineData.data;
+                         setAiImage(`data:image/png;base64,${base64EncodeString}`);
+                         foundImage = true;
+                    } 
                 }
-            });
-            
-            const parts = response.candidates?.[0]?.content?.parts || [];
-            let textOut = "";
-            let imageFound = false;
-
-            for (const part of parts) {
-                if (part.text) {
-                    textOut += part.text;
-                }
-                if (part.inlineData) {
-                    const imgUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                    setAiImage(imgUrl);
-                    imageFound = true;
-                }
-            }
-            
-            setAiResult(textOut || (imageFound ? "Here is the realistic visualization of your sketch." : "Analysis complete."));
+             }
+             if (foundImage) {
+                 setAiResult("Here is the visualized version of your sketch.");
+             } else {
+                 setAiResult(response.text || "No image generated.");
+             }
         } else {
-            let prompt = "";
-            if (mode === 'EXPLAIN') {
-                prompt = "Analyze the diagram, notes, or schematic in this whiteboard image. Explain what it represents, how it works, and provide any relevant context. Keep it concise but helpful.";
-            } else if (mode === 'MATH') {
-                prompt = "Identify the mathematical equations or problems handwritten in this image. Solve them step-by-step and provide the final answer clearly.";
-            }
-
-            const response = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
-                contents: { parts: [{ inlineData: { mimeType: 'image/png', data: base64Data } }, { text: prompt }] }
-            });
-
-            if (response.text) {
-                setAiResult(response.text);
-            } else {
-                setAiResult("Could not analyze the board. Please try again.");
-            }
+            setAiResult(response.text || "No response text.");
         }
 
     } catch (e: any) {
         console.error(e);
-        setAiResult("Error: " + (e.message || "Failed to connect to AI."));
+        setAiResult("Error: " + (e.message || "Failed."));
     } finally {
         setIsAnalyzing(false);
     }
@@ -795,9 +1047,18 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
                       ) : (
                           savedBoards.map(board => (
                               <div key={board.id} onClick={() => loadBoard(board)} className="p-3 rounded-lg border border-slate-100 dark:border-slate-800 hover:border-brand-500 hover:bg-brand-50 dark:hover:bg-slate-800 cursor-pointer group flex items-center justify-between">
-                                  <div>
-                                      <div className="font-medium text-slate-800 dark:text-slate-200">{board.name}</div>
-                                      <div className="text-xs text-slate-400">{board.date} • {board.data.length} items</div>
+                                  <div className="flex items-center gap-3 w-full">
+                                      {board.previewUrl ? (
+                                        <img src={board.previewUrl} alt={board.name} className="w-16 h-12 object-cover rounded border border-slate-200 dark:border-slate-700 bg-white" />
+                                      ) : (
+                                        <div className="w-16 h-12 rounded border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
+                                            <ImageIcon size={16} />
+                                        </div>
+                                      )}
+                                      <div className="flex-1 min-w-0">
+                                          <div className="font-medium text-slate-800 dark:text-slate-200 truncate">{board.name}</div>
+                                          <div className="text-xs text-slate-400">{board.date} • {board.data.length} items</div>
+                                      </div>
                                   </div>
                                   <button onClick={(e) => deleteBoard(e, board.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all">
                                       <Trash2 size={16} />
@@ -815,7 +1076,7 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
          {/* Main Tools */}
          <div className="bg-white dark:bg-slate-900 shadow-xl rounded-2xl p-2 flex gap-2 border border-slate-200 dark:border-slate-700 items-center overflow-x-auto max-w-[90vw]">
             
-            {/* AI Group (Code Removed) */}
+            {/* AI Group */}
             <div className="flex gap-1 pr-2 border-r border-slate-200 dark:border-slate-700">
                <button onClick={() => runAIAnalysis('EXPLAIN')} className="p-2 rounded-lg text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/30 group relative" title="AI Explain">
                   <Bot size={20}/>
@@ -828,6 +1089,10 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
                <button onClick={() => runAIAnalysis('REALIZE')} className="p-2 rounded-lg text-amber-500 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/30 group relative" title="Visualize">
                   <Wand2 size={20}/>
                   <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">Visualize</div>
+               </button>
+               <button onClick={runSmartBeautify} className="p-2 rounded-lg text-teal-500 hover:bg-teal-50 dark:text-teal-400 dark:hover:bg-teal-900/30 group relative" title="Smart Beautify">
+                  <Shapes size={20}/>
+                  <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">Smart Beautify</div>
                </button>
             </div>
 
@@ -846,6 +1111,7 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
               <ToolBtn t="ARROW" icon={<ArrowUpRight size={20}/>} label="Arrow" />
               <ToolBtn t="RECT" icon={<Square size={20}/>} label="Rect" />
               <ToolBtn t="CIRCLE" icon={<Circle size={20}/>} label="Circle" />
+              <ToolBtn t="DIAMOND" icon={<Hexagon size={20} className="rotate-90"/>} label="Diamond" />
               <ToolBtn t="TABLE" icon={<Grid3X3 size={20}/>} label="Table" />
             </div>
 
@@ -922,8 +1188,13 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
          </div>
 
          <div className="bg-white dark:bg-slate-900 p-2 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 flex flex-col gap-2">
-            <button onClick={saveBoard} className="p-2 text-slate-600 hover:text-green-600 hover:bg-green-50 rounded-lg group relative" title="Save Board">
-               <Save size={20} />
+            <button 
+                onClick={saveBoard} 
+                disabled={isSaving}
+                className="p-2 text-slate-600 hover:text-green-600 hover:bg-green-50 rounded-lg group relative disabled:opacity-50 disabled:cursor-wait" 
+                title="Save Board"
+            >
+               {isSaving ? <Loader2 size={20} className="animate-spin text-green-600" /> : <Save size={20} />}
                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">Save Page</div>
             </button>
             <button onClick={() => setShowSavedList(true)} className="p-2 text-slate-600 hover:text-orange-600 hover:bg-orange-50 rounded-lg group relative" title="Open Saved">
@@ -939,7 +1210,7 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
                <Copy size={20} />
                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">Copy Clipboard</div>
             </button>
-            <button onClick={handleClear} className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg group relative" title="Clear Page">
+            <button onClick={() => setShowClearConfirm(true)} className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg group relative" title="Clear Page">
                <Trash2 size={20} />
                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">Clear All</div>
             </button>
@@ -998,6 +1269,42 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
          />
       </div>
 
+      {/* Confirm Clear Modal */}
+      {showClearConfirm && (
+          <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center animate-in fade-in">
+              <div className="bg-white dark:bg-slate-900 w-80 rounded-2xl shadow-2xl p-6 border border-slate-200 dark:border-slate-800 text-center">
+                  <div className="w-12 h-12 bg-red-100 dark:bg-red-900/30 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <AlertTriangle size={24} />
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Clear Whiteboard?</h3>
+                  <p className="text-slate-500 dark:text-slate-400 mb-6 text-sm">
+                      This will remove all drawings and cannot be undone.
+                  </p>
+                  <div className="flex gap-3">
+                      <Button fullWidth variant="outline" onClick={() => setShowClearConfirm(false)}>Cancel</Button>
+                      <button 
+                        onClick={confirmClear} 
+                        className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+                      >
+                        Clear All
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+          <div className={`absolute bottom-8 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg shadow-lg border text-sm font-medium animate-in slide-in-from-bottom-5 fade-in z-50 flex items-center gap-2 ${
+              toast.type === 'success' 
+              ? 'bg-white dark:bg-slate-800 border-green-200 dark:border-green-900 text-green-700 dark:text-green-400' 
+              : 'bg-white dark:bg-slate-800 border-red-200 dark:border-red-900 text-red-600 dark:text-red-400'
+          }`}>
+              {toast.type === 'success' ? <Check size={16} /> : <AlertTriangle size={16} />}
+              {toast.msg}
+          </div>
+      )}
+
       {/* AI Result Modal */}
       {(isAnalyzing || aiResult || aiImage) && (
           <div className="absolute top-20 right-4 w-96 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden z-50 flex flex-col animate-in fade-in slide-in-from-right-10">
@@ -1019,6 +1326,7 @@ export const WhiteboardWorkspace: React.FC<WhiteboardProps> = ({ onBack }) => {
                           <p className="text-slate-500 dark:text-slate-400 text-sm">
                              {aiMode === 'MATH' ? 'Solving equations...' : 
                               aiMode === 'REALIZE' ? 'Rendering realistic visualization...' :
+                              aiMode === 'BEAUTIFY' ? 'Converting sketch to shapes...' :
                               'Understanding your diagram...'}
                           </p>
                       </div>
